@@ -1,22 +1,31 @@
 #!/usr/bin/env python
 """Tests for Tablib."""
 
-import datetime
+import datetime as dt
 import doctest
 import json
 import pickle
+import re
+import tempfile
 import unittest
-from collections import OrderedDict
+from decimal import Decimal
 from io import BytesIO, StringIO
 from pathlib import Path
 from uuid import uuid4
 
-from MarkupPy import markup
+import xlrd
+from odf import opendocument, table
+from openpyxl.reader.excel import load_workbook
 
 import tablib
 from tablib.core import Row, detect_format
 from tablib.exceptions import UnsupportedFormat
 from tablib.formats import registry
+
+try:
+    import pandas
+except ImportError:  # pragma: no cover
+    pandas = None
 
 
 class BaseTestCase(unittest.TestCase):
@@ -48,7 +57,7 @@ class TablibTestCase(BaseTestCase):
             'latex', 'df', 'rst',
         ]
         for format_ in all_formats:
-            if format_ in exclude:
+            if format_ in exclude or (format_ == 'df' and pandas is None):
                 continue
             dataset.export(format_)
 
@@ -56,11 +65,15 @@ class TablibTestCase(BaseTestCase):
         with self.assertRaises(UnsupportedFormat):
             data.export('??')
         # A known format but uninstalled
-        del registry._formats['ods']
-        msg = (r"The 'ods' format is not available. You may want to install the "
-               "odfpy package \\(or `pip install \"tablib\\[ods\\]\"`\\).")
-        with self.assertRaisesRegex(UnsupportedFormat, msg):
-            data.export('ods')
+        saved_registry = registry._formats.copy()
+        try:
+            del registry._formats['ods']
+            msg = (r"The 'ods' format is not available. You may want to install the "
+                   "odfpy package \\(or `pip install \"tablib\\[ods\\]\"`\\).")
+            with self.assertRaisesRegex(UnsupportedFormat, msg):
+                data.export('ods')
+        finally:
+            registry._formats = saved_registry
 
     def test_empty_append(self):
         """Verify append() correctly adds tuple with no headers."""
@@ -107,10 +120,19 @@ class TablibTestCase(BaseTestCase):
 
         # With Headers
         data.headers = ('fname', 'lname')
-        new_col = [21, 22]
-        data.append_col(new_col, header='age')
+        age_col = [21, 22]
+        data.append_col(age_col, header='age')
+        size_col = [1.65, 1.86]
+        data.insert_col(1, size_col, header='size')
 
-        self.assertEqual(data['age'], new_col)
+        self.assertEqual(data['age'], age_col)
+        self.assertEqual(data['size'], size_col)
+
+    def test_add_column_no_data_with_headers(self):
+        """Verify adding empty column when dataset has only headers."""
+        data.headers = ('fname', 'lname')
+        data.insert_col(1, [], header='size')
+        self.assertEqual(data.headers, ['fname', 'size', 'lname'])
 
     def test_add_column_no_data_no_headers(self):
         """Verify adding new column with no headers."""
@@ -145,7 +167,7 @@ class TablibTestCase(BaseTestCase):
         data.headers = ['first_name']
         # no data
 
-        new_col = ('allen')
+        new_col = 'allen'
 
         def append_col_callable():
             data.append_col(new_col, header='middle_name')
@@ -170,10 +192,42 @@ class TablibTestCase(BaseTestCase):
     def test_add_callable_column(self):
         """Verify adding column with values specified as callable."""
 
-        def new_col(x):
-            return x[0]
+        def new_col(row):
+            return row[0]
+
+        def initials(row):
+            return f"{row[0][0]}{row[1][0]}"
 
         self.founders.append_col(new_col, header='first_again')
+        self.founders.append_col(initials, header='initials')
+
+        # A new row can still be appended, and the dynamic column value generated.
+        self.founders.append(('Some', 'One', 71))
+        # Also acceptable when all dynamic column values are provided.
+        self.founders.append(('Other', 'Second', 84, 'Other', 'OS'))
+
+        self.assertEqual(self.founders[3], ('Some', 'One', 71, 'Some', 'SO'))
+        self.assertEqual(self.founders[4], ('Other', 'Second', 84, 'Other', 'OS'))
+        self.assertEqual(
+            self.founders['first_again'],
+            ['John', 'George', 'Thomas', 'Some', 'Other']
+        )
+        self.assertEqual(
+            self.founders['initials'],
+            ['JA', 'GW', 'TJ', 'SO', 'OS']
+        )
+
+        # However only partial dynamic values provided is not accepted.
+        with self.assertRaises(tablib.InvalidDimensions):
+            self.founders.append(('Should', 'Crash', 60, 'Partial'))
+
+        # Add a new row after dynamic column deletion
+        del self.founders['first_again']
+        self.founders.append(('After', 'Deletion', 75))
+        self.assertEqual(
+            self.founders['initials'],
+            ['JA', 'GW', 'TJ', 'SO', 'OS', 'AD']
+        )
 
     def test_header_slicing(self):
         """Verify slicing by headers."""
@@ -186,6 +240,23 @@ class TablibTestCase(BaseTestCase):
 
         self.assertEqual(self.founders['gpa'],
                          [self.john[2], self.george[2], self.tom[2]])
+
+    def test_get(self):
+        """Verify getting rows by index"""
+
+        self.assertEqual(self.founders.get(0), self.john)
+        self.assertEqual(self.founders.get(1), self.george)
+        self.assertEqual(self.founders.get(2), self.tom)
+
+        self.assertEqual(self.founders.get(-1), self.tom)
+        self.assertEqual(self.founders.get(-2), self.george)
+        self.assertEqual(self.founders.get(-3), self.john)
+
+        with self.assertRaises(IndexError):
+            self.founders.get(3)
+
+        with self.assertRaises(TypeError):
+            self.founders.get('first_name')
 
     def test_get_col(self):
         """Verify getting columns by index"""
@@ -273,17 +344,17 @@ class TablibTestCase(BaseTestCase):
         """Passes in a single datetime and a single date and exports."""
 
         new_row = (
-            datetime.datetime.now(),
-            datetime.datetime.today(),
+            dt.datetime.now(),
+            dt.datetime.today(),
         )
 
         data.append(new_row)
         self._test_export_data_in_all_formats(data)
 
     def test_separator_append(self):
-        for a in range(3):
+        for _ in range(3):
             data.append_separator('foobar')
-            for a in range(5):
+            for _ in range(5):
                 data.append(['asdf', 'asdf', 'asdf'])
         self._test_export_data_in_all_formats(data)
 
@@ -301,21 +372,29 @@ class TablibTestCase(BaseTestCase):
             tablib.Databook().load('Any stream', 'csv')
 
     def test_book_unsupported_export(self):
-        book = tablib.Databook().load('[{"title": "first", "data": [{"first_name": "John"}]}]', 'json')
+        book = tablib.Databook().load(
+            '[{"title": "first", "data": [{"first_name": "John"}]}]',
+            'json',
+        )
         with self.assertRaises(UnsupportedFormat):
             book.export('csv')
 
     def test_book_import_from_file(self):
         xlsx_source = Path(__file__).parent / 'files' / 'founders.xlsx'
-        with open(str(xlsx_source), mode='rb') as fh:
+        with xlsx_source.open('rb') as fh:
             book = tablib.Databook().load(fh, 'xlsx')
         self.assertEqual(eval(book.json)[0]['title'], 'Feuille1')
 
     def test_dataset_import_from_file(self):
         xlsx_source = Path(__file__).parent / 'files' / 'founders.xlsx'
-        with open(str(xlsx_source), mode='rb') as fh:
+        with xlsx_source.open('rb') as fh:
             dset = tablib.Dataset().load(fh, 'xlsx')
         self.assertEqual(eval(dset.json)[0]['last_name'], 'Adams')
+
+    def test_empty_file(self):
+        tmp_file = tempfile.NamedTemporaryFile()
+        dset = tablib.Dataset().load(tmp_file, 'yaml')
+        self.assertEqual(dset.json, '[]')
 
     def test_auto_format_detect(self):
         """Test auto format detection."""
@@ -330,8 +409,9 @@ class TablibTestCase(BaseTestCase):
         _ods = self.founders.export('ods')
         self.assertEqual(tablib.detect_format(_ods), 'ods')
 
-        _df = self.founders.export('df')
-        self.assertEqual(tablib.detect_format(_df), 'df')
+        if pandas is not None:
+            _df = self.founders.export('df')
+            self.assertEqual(tablib.detect_format(_df), 'df')
 
         _yaml = '- {age: 90, first_name: John, last_name: Adams}'
         self.assertEqual(tablib.detect_format(_yaml), 'yaml')
@@ -346,7 +426,8 @@ class TablibTestCase(BaseTestCase):
         self.assertEqual(tablib.detect_format(_tsv), 'tsv')
 
         _bunk = StringIO(
-            '¡¡¡¡¡¡---///\n\n\n¡¡£™∞¢£§∞§¶•¶ª∞¶•ªº••ª–º§•†•§º¶•†¥ª–º•§ƒø¥¨©πƒø†ˆ¥ç©¨√øˆ¥≈†ƒ¥ç©ø¨çˆ¥ƒçø¶'
+            '¡¡¡¡¡¡---///\n\n\n' +
+            '¡¡£™∞¢£§∞§¶•¶ª∞¶•ªº••ª–º§•†•§º¶•†¥ª–º•§ƒø¥¨©πƒø†ˆ¥ç©¨√øˆ¥≈†ƒ¥ç©ø¨çˆ¥ƒçø¶'
         )
         self.assertEqual(tablib.detect_format(_bunk), None)
 
@@ -363,6 +444,21 @@ class TablibTestCase(BaseTestCase):
                          ("last_name", "Adams", "Washington", "Jefferson"))
         self.assertEqual(second_row,
                          ("gpa", 90, 67, 50))
+
+    def test_transpose_empty_dataset(self):
+        data = tablib.Dataset()
+        self.assertEqual(data.transpose(), None)
+
+    def test_transpose_with_no_headers(self):
+        data = tablib.Dataset()
+        data.append(('Cat', 'Eats fish', 26))
+        data.append(['Dogs like', '_balls', 48])
+        data.append([73, 'people', 'sleeps'])
+        dataTrans = data.transpose()
+        self.assertEqual(dataTrans[0], ('Cat', 'Dogs like', 73))
+        self.assertEqual(dataTrans[1], ('Eats fish', '_balls', 'people'))
+        self.assertEqual(dataTrans[2], (26, 48, 'sleeps'))
+        self.assertEqual(data.transpose().transpose().dict, data.dict)
 
     def test_transpose_multiple_headers(self):
 
@@ -480,12 +576,34 @@ class TablibTestCase(BaseTestCase):
         """Confirm formatters are being triggered."""
 
         def _formatter(cell_value):
-            return str(cell_value).upper()
+            return str(cell_value)[1:]
 
         self.founders.add_formatter('last_name', _formatter)
 
-        for name in [r['last_name'] for r in self.founders.dict]:
-            self.assertTrue(name.isupper())
+        expected = [
+            {'first_name': 'John', 'last_name': 'dams', 'gpa': 90},
+            {'first_name': 'George', 'last_name': 'ashington', 'gpa': 67},
+            {'first_name': 'Thomas', 'last_name': 'efferson', 'gpa': 50},
+        ]
+        self.assertEqual(self.founders.dict, expected)
+        # Test once more as the result should be the same
+        self.assertEqual(self.founders.dict, expected)
+
+    def test_formatters_all_cols(self):
+        """
+        Passing None as first add_formatter param apply formatter to all columns.
+        """
+
+        def _formatter(cell_value):
+            return str(cell_value).upper()
+
+        self.founders.add_formatter(None, _formatter)
+
+        self.assertEqual(self.founders.dict, [
+            {'first_name': 'JOHN', 'last_name': 'ADAMS', 'gpa': '90'},
+            {'first_name': 'GEORGE', 'last_name': 'WASHINGTON', 'gpa': '67'},
+            {'first_name': 'THOMAS', 'last_name': 'JEFFERSON', 'gpa': '50'},
+        ])
 
     def test_unicode_renders_markdown_table(self):
         # add another entry to test right field width for
@@ -602,43 +720,102 @@ class TablibTestCase(BaseTestCase):
 
 
 class HTMLTests(BaseTestCase):
-    def test_html_export(self):
+    founders_html = (
+        "<table>"
+        "<thead>"
+        "<tr><th>first_name</th><th>last_name</th><th>gpa</th></tr>"
+        "</thead>"
+        "<tbody>"
+        "<tr><td>John</td><td>Adams</td><td>90</td></tr>"
+        "<tr><td>George</td><td>Washington</td><td>67</td></tr>"
+        "<tr><td>Thomas</td><td>Jefferson</td><td>50</td></tr>"
+        "</tbody>"
+        "</table>"
+    )
+
+    def test_html_dataset_export(self):
         """HTML export"""
-
-        html = markup.page()
-        html.table.open()
-        html.thead.open()
-
-        html.tr(markup.oneliner.th(self.founders.headers))
-        html.thead.close()
-
-        for founder in self.founders:
-            html.tr(markup.oneliner.td(founder))
-
-        html.table.close()
-        html = str(html)
-
-        self.assertEqual(html, self.founders.html)
+        self.assertEqual(self.founders_html, self.founders.html.replace('\n', ''))
 
     def test_html_export_none_value(self):
         """HTML export"""
 
-        html = markup.page()
-        html.table.open()
-        html.thead.open()
-
-        html.tr(markup.oneliner.th(['foo', '', 'bar']))
-        html.thead.close()
-
-        html.tr(markup.oneliner.td(['foo', '', 'bar']))
-
-        html.table.close()
-        html = str(html)
-
         headers = ['foo', None, 'bar']
-        d = tablib.Dataset(['foo', None, 'bar'], headers=headers)
+        d = tablib.Dataset(['foø', None, 'bar'], headers=headers)
+        expected = (
+            "<table>"
+            "<thead>"
+            "<tr><th>foo</th><th></th><th>bar</th></tr>"
+            "</thead>"
+            "<tbody>"
+            "<tr><td>foø</td><td></td><td>bar</td></tr>"
+            "</tbody>"
+            "</table>"
+        )
+        self.assertEqual(expected, d.html.replace('\n', ''))
 
-        self.assertEqual(html, d.html)
+    def test_html_databook_export(self):
+        book = tablib.Databook()
+        book.add_sheet(self.founders)
+        book.add_sheet(self.founders)
+        self.maxDiff = None
+        self.assertEqual(
+            book.html.replace('\n', ''),
+            f"<h3>Founders</h3>{self.founders_html}<h3>Founders</h3>{self.founders_html}"
+        )
+
+    def test_html_import(self):
+        data.html = self.founders_html
+
+        self.assertEqual(['first_name', 'last_name', 'gpa'], data.headers)
+        self.assertEqual([
+            ('John', 'Adams', '90'),
+            ('George', 'Washington', '67'),
+            ('Thomas', 'Jefferson', '50'),
+        ], data[:])
+
+    def test_html_import_no_headers(self):
+        data.html = """
+            <table>
+            <tr><td>John</td><td><i>Adams</i></td><td>90</td></tr>"
+            <tr><td>George</td><td><i>Wash</i>ington</td><td>67</td></tr>"
+            </table>
+        """
+
+        self.assertIsNone(data.headers)
+        self.assertEqual([
+            ('John', 'Adams', '90'),
+            ('George', 'Washington', '67'),
+        ], data[:])
+
+    def test_html_import_no_table(self):
+        html = "<html><body></body></html>"
+
+        with self.assertRaises(ValueError) as exc:
+            data.html = html
+        self.assertEqual('No <table> found in input HTML', str(exc.exception))
+
+    def test_html_import_table_id(self):
+        """A table with a specific id can be targeted for import."""
+        html_input = """
+            <html><body>
+            <table id="ignore">
+              <thead><tr><th>IGNORE</th></tr></thead><tr><td>IGNORE</td></tr>
+            </table>
+            <table id="import">
+              <thead><tr><th>first_name</th><th>last_name</th></tr></thead>
+              <tr><td>John</td><td>Adams</td></tr>"
+            </table>
+            </html></body>
+        """
+        dataset = tablib.import_set(html_input, format="html", table_id="import")
+        self.assertEqual(['first_name', 'last_name'], dataset.headers)
+        self.assertEqual([('John', 'Adams')], dataset[:])
+
+        # If the id is not found, an error is raised
+        with self.assertRaises(ValueError) as exc:
+            tablib.import_set(html_input, format="html", table_id="notfound")
+        self.assertEqual('No <table> found with id="notfound" in input HTML', str(exc.exception))
 
 
 class RSTTests(BaseTestCase):
@@ -822,7 +999,7 @@ class CSVTests(BaseTestCase):
             '12,Smith,rounded\n'
         )
         dataset = tablib.import_set(csv_text, format="csv", skip_lines=2)
-        self.assertEqual(dataset.headers, ['id', 'name','description'])
+        self.assertEqual(dataset.headers, ['id', 'name', 'description'])
 
     def test_csv_import_mac_os_lf(self):
         csv_text = (
@@ -990,6 +1167,119 @@ class TSVTests(BaseTestCase):
         self.assertEqual(tsv, self.founders.tsv)
 
 
+class ODSTests(BaseTestCase):
+    FORMAT_CONVERT = {
+        'yearlong': '%Y',
+        'monthlong': '%m',
+        'daylong': '%d',
+        'hourslong': '%H',
+        'minuteslong': '%M',
+        'secondslong': '%S',
+        'secondslong0': '%S',
+    }
+
+    def test_ods_export_import_set(self):
+        date = dt.date(2019, 10, 4)
+        date_time = dt.datetime(2019, 10, 4, 12, 30, 8)
+        time = dt.time(14, 30)
+        data.append(('string', '004', 42, 21.55, Decimal('34.5'), date, time, date_time, None))
+        data.headers = (
+            'string', 'start0', 'integer', 'float', 'decimal', 'date', 'time', 'date/time', 'None'
+        )
+        _ods = data.ods
+        data.ods = _ods
+        self.assertEqual(data.dict[0]['string'], 'string')
+        self.assertEqual(data.dict[0]['start0'], '004')
+        self.assertEqual(data.dict[0]['integer'], 42)
+        self.assertEqual(data.dict[0]['float'], 21.55)
+        self.assertEqual(data.dict[0]['decimal'], 34.5)
+        self.assertEqual(data.dict[0]['date'], date)
+        self.assertEqual(data.dict[0]['time'], time)
+        self.assertEqual(data.dict[0]['date/time'], date_time)
+        self.assertEqual(data.dict[0]['None'], '')
+
+    def test_ods_export_display(self):
+        """Test that exported datetime types are displayed correctly in office software"""
+        date = dt.date(2019, 10, 4)
+        date_time = dt.datetime(2019, 10, 4, 12, 30, 8)
+        time = dt.time(14, 30)
+        data.append((date, time, date_time))
+        data.headers = ('date', 'time', 'date/time')
+        _ods = data.ods
+        ods_book = opendocument.load(BytesIO(_ods))
+        styles = {style.getAttribute('name'): style for style in ods_book.styles.childNodes}
+        automatic_styles = {
+            style.getAttribute('name'): style.getAttribute('datastylename')
+            for style in ods_book.automaticstyles.childNodes
+        }
+
+        def get_format(cell):
+            style = styles[automatic_styles[cell.getAttribute('stylename')]]
+            f = []
+            for number in style.childNodes:
+                name = number.qname[1] + ''.join(number.attributes.values())
+                f.append(self.FORMAT_CONVERT.get(name, str(number)))
+            return ''.join(f)
+
+        cells = ods_book.spreadsheet.getElementsByType(table.TableRow)[1].childNodes
+        self.assertEqual(str(date), str(cells[0]))
+        self.assertEqual('%Y-%m-%d', get_format(cells[0]))
+
+        self.assertEqual(str(time), str(cells[1]))
+        self.assertEqual('%H:%M:%S', get_format(cells[1]))
+
+        self.assertEqual(str(date_time), str(cells[2]))
+        self.assertEqual('%Y-%m-%d %H:%M:%S', get_format(cells[2]))
+
+    def test_ods_import_book(self):
+        ods_source = Path(__file__).parent / 'files' / 'book.ods'
+        with ods_source.open('rb') as fh:
+            dbook = tablib.Databook().load(fh, 'ods')
+        self.assertEqual(len(dbook.sheets()), 2)
+
+    def test_ods_import_set_skip_lines(self):
+        data.append(('garbage', 'line', ''))
+        data.append(('', '', ''))
+        data.append(('id', 'name', 'description'))
+        _ods = data.ods
+        new_data = tablib.Dataset().load(_ods, skip_lines=2)
+        self.assertEqual(new_data.headers, ['id', 'name', 'description'])
+
+    def test_ods_import_set_ragged(self):
+        ods_source = Path(__file__).parent / 'files' / 'ragged.ods'
+        with ods_source.open('rb') as fh:
+            dataset = tablib.Dataset().load(fh, 'ods')
+        self.assertEqual(dataset.pop(), (1, '', True, ''))
+
+    def test_ods_unknown_value_type(self):
+        # The ods file was trafficked to contain:
+        # <table:table-cell office:value-type="unknown" calcext:value-type="string">
+        ods_source = Path(__file__).parent / 'files' / 'unknown_value_type.ods'
+        with ods_source.open('rb') as fh:
+            dataset = tablib.Dataset().load(fh, 'ods')
+        self.assertEqual(dataset.pop(), ('abcd',))
+
+    def test_ods_export_dates(self):
+        """test against odf specification"""
+        date = dt.date(2019, 10, 4)
+        date_time = dt.datetime(2019, 10, 4, 12, 30, 8)
+        time = dt.time(14, 30)
+        data.append((date, time, date_time))
+        data.headers = ('date', 'time', 'date/time')
+        _ods = data.ods
+        ods_book = opendocument.load(BytesIO(_ods))
+        cells = ods_book.spreadsheet.getElementsByType(table.TableRow)[1].childNodes
+        # date value
+        self.assertEqual(cells[0].getAttribute('datevalue'), '2019-10-04')
+        # time value
+        duration_exp = re.compile(r"^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?"
+                                  r"(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?$")
+        duration = duration_exp.match(cells[1].getAttribute('timevalue')).groups()
+        self.assertListEqual([0, 0, 0, 14, 30, 0], [int(v or 0) for v in duration])
+        # datetime value
+        self.assertEqual(cells[2].getAttribute('datevalue'), '2019-10-04T12:30:08')
+
+
 class XLSTests(BaseTestCase):
     def test_xls_format_detect(self):
         """Test the XLS format detection."""
@@ -998,9 +1288,9 @@ class XLSTests(BaseTestCase):
 
     def test_xls_date_import(self):
         xls_source = Path(__file__).parent / 'files' / 'dates.xls'
-        with open(str(xls_source), mode='rb') as fh:
+        with xls_source.open('rb') as fh:
             dset = tablib.Dataset().load(fh, 'xls')
-        self.assertEqual(dset.dict[0]['birth_date'], datetime.datetime(2015, 4, 12, 0, 0))
+        self.assertEqual(dset.dict[0]['birth_date'], dt.datetime(2015, 4, 12, 0, 0))
 
     def test_xlsx_import_set_skip_lines(self):
         data.append(('garbage', 'line', ''))
@@ -1017,7 +1307,7 @@ class XLSTests(BaseTestCase):
             data = tablib.Dataset().load(fh.read())
         self.assertEqual(
             data.dict[0],
-            OrderedDict([
+            dict([
                 ('div by 0', '#DIV/0!'),
                 ('name unknown', '#NAME?'),
                 ('not available (formula)', '#N/A'),
@@ -1025,15 +1315,56 @@ class XLSTests(BaseTestCase):
             ])
         )
 
+    def test_book_import_from_stream(self):
+        in_stream = self.founders.xls
+        book = tablib.Databook().load(in_stream, 'xls')
+        self.assertEqual(book.sheets()[0].title, 'Founders')
+
+    def test_xls_export_with_dates(self):
+        date = dt.date(2019, 10, 4)
+        time = dt.time(14, 30)
+        date_time = dt.datetime(2019, 10, 4, 12, 30, 8)
+        data.append((date, time, date_time))
+        data.headers = ('date', 'time', 'date/time')
+        _xls = data.xls
+        xls_book = xlrd.open_workbook(file_contents=_xls, formatting_info=True)
+        row = xls_book.sheet_by_index(0).row(1)
+
+        def get_format_str(cell):
+            return xls_book.format_map[xls_book.xf_list[cell.xf_index].format_key].format_str
+
+        self.assertEqual('m/d/yy', get_format_str(row[0]))
+        self.assertEqual('h:mm:ss', get_format_str(row[1]))
+        self.assertEqual('m/d/yy h:mm', get_format_str(row[2]))
+
 
 class XLSXTests(BaseTestCase):
+    def _helper_export_column_width(self, column_width):
+        """check that column width adapts to value length"""
+        def _get_width(data, input_arg):
+            xlsx_content = data.export('xlsx', column_width=input_arg)
+            wb = load_workbook(filename=BytesIO(xlsx_content))
+            ws = wb.active
+            return ws.column_dimensions['A'].width
+
+        xls_source = Path(__file__).parent / 'files' / 'xlsx_cell_values.xlsx'
+        with xls_source.open('rb') as fh:
+            data = tablib.Dataset().load(fh)
+        width_before = _get_width(data, column_width)
+        data.append([
+            'verylongvalue-verylongvalue-verylongvalue-verylongvalue-'
+            'verylongvalue-verylongvalue-verylongvalue-verylongvalue',
+        ])
+        width_after = _get_width(data, width_before)
+        return width_before, width_after
+
     def test_xlsx_format_detect(self):
         """Test the XLSX format detection."""
         in_stream = self.founders.xlsx
         self.assertEqual(detect_format(in_stream), 'xlsx')
 
     def test_xlsx_import_set(self):
-        date_time = datetime.datetime(2019, 10, 4, 12, 30, 8)
+        date_time = dt.datetime(2019, 10, 4, 12, 30, 8)
         data.append(('string', '004', 42, 21.55, date_time))
         data.headers = ('string', 'start0', 'integer', 'float', 'date/time')
         _xlsx = data.xlsx
@@ -1070,12 +1401,19 @@ class XLSXTests(BaseTestCase):
         new_data = tablib.Databook().load(_xlsx, 'xlsx')
         self.assertEqual(new_data.sheets()[0].title, 'bad name -------qwertyuiopasdfg')
 
-    def test_xlsx_import_set_ragged(self):
-        """Import XLSX file when not all rows have the same length."""
+    def test_xlsx_import_book_ragged(self):
+        """Import XLSX file through databook when not all rows have the same length."""
         xlsx_source = Path(__file__).parent / 'files' / 'ragged.xlsx'
-        with open(str(xlsx_source), mode='rb') as fh:
+        with xlsx_source.open('rb') as fh:
             book = tablib.Databook().load(fh, 'xlsx')
         self.assertEqual(book.sheets()[0].pop(), (1.0, ''))
+
+    def test_xlsx_import_set_ragged(self):
+        """Import XLSX file through dataset when not all rows have the same length."""
+        xlsx_source = Path(__file__).parent / 'files' / 'ragged.xlsx'
+        with xlsx_source.open('rb') as fh:
+            dataset = tablib.Dataset().load(fh, 'xlsx')
+        self.assertEqual(dataset.pop(), (1.0, ''))
 
     def test_xlsx_wrong_char(self):
         """Bad characters are not silently ignored. We let the exception bubble up."""
@@ -1092,6 +1430,60 @@ class XLSXTests(BaseTestCase):
             data = tablib.Dataset().load(fh)
         self.assertEqual(data.headers[0], 'Hello World')
 
+    def test_xlsx_export_set_escape_formulae(self):
+        """
+        Test that formulae are sanitised on export.
+        """
+        data.append(('=SUM(1+1)',))
+        _xlsx = data.export('xlsx')
+
+        # read back using openpyxl because tablib reads formulae as values
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('=SUM(1+1)', wb.active['A1'].value)
+
+        _xlsx = data.export('xlsx', escape=True)
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('SUM(1+1)', wb.active['A1'].value)
+
+    def test_xlsx_export_book_escape_formulae(self):
+        """
+        Test that formulae are sanitised on export.
+        """
+        data.append(('=SUM(1+1)',))
+        _book = tablib.Databook()
+        _book.add_sheet(data)
+        _xlsx = _book.export('xlsx')
+
+        # read back using openpyxl because tablib reads formulae as values
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('=SUM(1+1)', wb.active['A1'].value)
+
+        _xlsx = _book.export('xlsx', escape=True)
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('SUM(1+1)', wb.active['A1'].value)
+
+    def test_xlsx_export_set_escape_formulae_in_header(self):
+        data.headers = ('=SUM(1+1)',)
+        _xlsx = data.export('xlsx')
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('=SUM(1+1)', wb.active['A1'].value)
+
+        _xlsx = data.export('xlsx', escape=True)
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('SUM(1+1)', wb.active['A1'].value)
+
+    def test_xlsx_export_book_escape_formulae_in_header(self):
+        data.headers = ('=SUM(1+1)',)
+        _book = tablib.Databook()
+        _book.add_sheet(data)
+        _xlsx = _book.export('xlsx')
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('=SUM(1+1)', wb.active['A1'].value)
+
+        _xlsx = _book.export('xlsx', escape=True)
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('SUM(1+1)', wb.active['A1'].value)
+
     def test_xlsx_bad_dimensions(self):
         """Test loading file with bad dimension.  Must be done with
         read_only=False."""
@@ -1099,6 +1491,39 @@ class XLSXTests(BaseTestCase):
         with xls_source.open('rb') as fh:
             data = tablib.Dataset().load(fh, read_only=False)
         self.assertEqual(data.height, 3)
+
+    def test_xlsx_raise_ValueError_on_cell_write_during_export(self):
+        """Test that the process handles errors which might be raised
+        when calling cell setter."""
+        # openpyxl does not handle array type, so will raise ValueError,
+        # which results in the array being cast to string
+        data.append(([1],))
+        _xlsx = data.export('xlsx')
+        wb = load_workbook(filename=BytesIO(_xlsx))
+        self.assertEqual('[1]', wb.active['A1'].value)
+
+    def test_xlsx_column_width_adaptive(self):
+        """ Test that column width adapts to value length"""
+        width_before, width_after = self._helper_export_column_width("adaptive")
+        self.assertEqual(width_before, 11)
+        self.assertEqual(width_after, 11)
+
+    def test_xlsx_column_width_integer(self):
+        """Test that column width changes to integer length"""
+        width_before, width_after = self._helper_export_column_width(10)
+        self.assertEqual(width_before, 10)
+        self.assertEqual(width_after, 10)
+
+    def test_xlsx_column_width_none(self):
+        """Test that column width does not change"""
+        width_before, width_after = self._helper_export_column_width(None)
+        self.assertEqual(width_before, 13)
+        self.assertEqual(width_after, 13)
+
+    def test_xlsx_column_width_value_error(self):
+        """Raise ValueError if column_width is not a valid input"""
+        with self.assertRaises(ValueError):
+            self._helper_export_column_width("invalid input")
 
 
 class JSONTests(BaseTestCase):
@@ -1160,6 +1585,12 @@ class JSONTests(BaseTestCase):
 
         self.assertEqual(founders_json, expected_json)
 
+    def test_json_list_of_lists(self):
+        input_json = "[[1,2],[3,4]]"
+        expected_yaml = "- [1, 2]\n- [3, 4]\n"
+        dset = tablib.Dataset().load(in_stream=input_json, format="json")
+        self.assertEqual(dset.export("yaml"), expected_yaml)
+
 
 class YAMLTests(BaseTestCase):
     def test_yaml_format_detect(self):
@@ -1217,6 +1648,13 @@ class YAMLTests(BaseTestCase):
 """
         output = self.founders.yaml
         self.assertEqual(output, expected)
+
+    def test_yaml_load(self):
+        """ test issue 524: invalid format  """
+        yaml_source = Path(__file__).parent / 'files' / 'issue_524.yaml'
+        with yaml_source.open('rb') as fh:
+            with self.assertRaises(UnsupportedFormat):
+                tablib.Dataset().load(fh, 'yaml')
 
 
 class LatexTests(BaseTestCase):

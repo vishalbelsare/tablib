@@ -1,3 +1,17 @@
+import datetime
+import io
+import struct
+import sys
+
+from . import fields
+from .utils import getDate
+
+__version__ = "$Revision: 1.6 $"[11:-2]
+__date__ = "$Date: 2010/09/16 05:06:39 $"[7:-2]
+
+__all__ = ["DbfHeader"]
+
+
 """DBF header definition.
 
 TODO:
@@ -13,19 +27,6 @@ TODO:
 04-jul-2006 [als]   added export declaration
 15-dec-2005 [yc]    created
 """
-
-__version__ = "$Revision: 1.6 $"[11:-2]
-__date__ = "$Date: 2010/09/16 05:06:39 $"[7:-2]
-
-__all__ = ["DbfHeader"]
-
-import datetime
-import io
-import struct
-import sys
-
-from . import fields
-from .utils import getDate
 
 
 class DbfHeader:
@@ -105,7 +106,7 @@ class DbfHeader:
         """Return header object from the stream."""
         stream.seek(0)
         first_32 = stream.read(32)
-        if type(first_32) != bytes:
+        if not isinstance(first_32, bytes):
             _data = bytes(first_32, sys.getfilesystemencoding())
         _data = first_32
         (_cnt, _hdrLen, _recLen) = struct.unpack("<I2H", _data[4:12])
@@ -164,8 +165,9 @@ Version (signature): 0x%02x
       Record length: %d
        Record count: %d
  FieldName Type Len Dec
-""" % (self.signature, self.lastUpdate, self.headerLength,
-    self.recordLength, self.recordCount)
+"""
+        _rv = _rv % (self.signature, self.lastUpdate, self.headerLength,
+                     self.recordLength, self.recordCount)
         _rv += "\n".join(
             ["%10s %4s %3s %3s" % _fld.fieldInfo() for _fld in self.fields]
         )
@@ -241,13 +243,13 @@ Version (signature): 0x%02x
     def toString(self):
         """Returned 32 chars length string with encoded header."""
         return struct.pack("<4BI2H",
-            self.signature,
-            self.year - 1900,
-            self.month,
-            self.day,
-            self.recordCount,
-            self.headerLength,
-            self.recordLength) + (b'\x00' * 20)
+                           self.signature,
+                           self.year - 1900,
+                           self.month,
+                           self.day,
+                           self.recordCount,
+                           self.headerLength,
+                           self.recordLength) + (b'\x00' * 20)
         # TODO: figure out if bytes(utf-8) is correct here.
 
     def setCurrentDate(self):

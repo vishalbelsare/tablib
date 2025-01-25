@@ -1,4 +1,21 @@
 #!/usr/bin/python
+
+__version__ = "$Revision: 1.4 $"[11:-2]
+__date__ = "$Date: 2006/07/04 08:18:18 $"[7:-2]
+
+__all__ = ["dbf_new"]
+
+from .dbf import Dbf
+from .fields import (
+    DbfCharacterFieldDef,
+    DbfDateFieldDef,
+    DbfDateTimeFieldDef,
+    DbfLogicalFieldDef,
+    DbfNumericFieldDef,
+)
+from .header import DbfHeader
+from .record import DbfRecord
+
 """.DBF creation helpers.
 
 Note: this is a legacy interface.  New code should use Dbf class
@@ -7,7 +24,7 @@ Note: this is a legacy interface.  New code should use Dbf class
 TODO:
   - handle Memo fields.
   - check length of the fields according to the
-    `http://www.clicketyclick.dk/databases/xbase/format/data_types.html`
+    `https://www.clicketyclick.dk/databases/xbase/format/data_types.html`
 
 """
 """History (most recent first)
@@ -18,16 +35,6 @@ TODO:
                     dbf_new now is a new class (inherited from object)
 ??-jun-2000 [--]    added by Hans Fiby
 """
-
-__version__ = "$Revision: 1.4 $"[11:-2]
-__date__ = "$Date: 2006/07/04 08:18:18 $"[7:-2]
-
-__all__ = ["dbf_new"]
-
-from .dbf import *
-from .fields import *
-from .header import *
-from .record import *
 
 
 class _FieldDefinition:
@@ -73,7 +80,7 @@ class _FieldDefinition:
         self.cls = _cls
 
     def getDbfField(self):
-        "Return `DbfFieldDef` instance from the current definition."
+        """Return `DbfFieldDef` instance from the current definition."""
         return self.cls(self.name, self.len, self.dec)
 
     def appendToHeader(self, dbfh):
@@ -179,5 +186,3 @@ if __name__ == '__main__':
             print(f'{fldName}:\t {rec[fldName]}')
         print()
     dbft.close()
-
-# vim: set et sts=4 sw=4 :

@@ -167,7 +167,13 @@ You can slice and dice your data, just like a standard Python list. ::
 
     >>> data[0]
     ('Kenneth', 'Reitz', 22)
+    >>> data[0:2]
+    [('Kenneth', 'Reitz', 22), ('Bessie', 'Monke', 20)]
 
+You can also access a row using its index without slicing. ::
+
+    >>> data.get(0)
+    ('Kenneth', 'Reitz', 22)
 
 If we had a set of data consisting of thousands of rows,
 it could be useful to get a list of values in a column.
@@ -218,8 +224,6 @@ And now for something completely different.
 ---------------
 Dynamic Columns
 ---------------
-
-.. versionadded:: 0.8.3
 
 Thanks to Josh Ourisman, Tablib now supports adding dynamic columns.
 A dynamic column is a single callable object (*e.g.* a function).
@@ -272,15 +276,21 @@ Adding this function to our dataset as a dynamic column would result in: ::
     - {Age: 22, First Name: Kenneth, Gender: Male, Last Name: Reitz}
     - {Age: 20, First Name: Bessie, Gender: Female, Last Name: Monke}
 
+When you add new rows to a dataset that contains dynamic columns, you should
+either provide all values in the row, or only the non-dynamic values and then
+the dynamic values will be automatically generated using the function initially
+provided for the column calculation.
+
+..versionchanged:: 3.6.0
+
+    In older versions, you could only add new rows with fully-populated rows,
+    including dynamic columns.
 
 .. _tags:
 
 ----------------------------
 Filtering Datasets with Tags
 ----------------------------
-
-.. versionadded:: 0.9.0
-
 
 When constructing a :class:`Dataset` object,
 you can add tags to rows by specifying the ``tags`` parameter.
@@ -303,7 +313,7 @@ Now that we have extra meta-data on our rows, we can easily filter our :class:`D
     >>> students.filter(['female']).yaml
     - {first: Bessie, Last: Monke}
 
-By default, when you pass a list of tags you get filter type or. :: 
+By default, when you pass a list of tags you get filter type or. ::
 
     >>> students.filter(['female', 'creative']).yaml
     - {first: Daniel, Last: Dupont}
@@ -355,8 +365,6 @@ The resulting ``students.xls`` file will contain a separate spreadsheet for each
 ----------
 Separators
 ----------
-
-.. versionadded:: 0.8.2
 
 When constructing a spreadsheet,
 it's often useful to create a blank row containing information on the upcoming data. So,

@@ -55,7 +55,7 @@ class LATEXFormat:
         midrule = cls._midrule(dataset.width)
         body = '\n'.join([cls._serialize_row(row) for row in dataset])
         return cls.TABLE_TEMPLATE % dict(CAPTION=caption, COLSPEC=colspec,
-                                     HEADER=header, MIDRULE=midrule, BODY=body)
+                                         HEADER=header, MIDRULE=midrule, BODY=body)
 
     @classmethod
     def _colspec(cls, dataset_width):
@@ -122,11 +122,11 @@ class LATEXFormat:
         return 6 * ' ' + ' & '.join(new_row) + ' \\\\'
 
     @classmethod
-    def _escape_tex_reserved_symbols(cls, input):
+    def _escape_tex_reserved_symbols(cls, string):
         """Escapes all TeX reserved symbols ('_', '~', etc.) in a string.
 
-        :param input: String to escape
+        :param string: String to escape
         """
         def replace(match):
             return cls.TEX_RESERVED_SYMBOLS_MAP[match.group()]
-        return cls.TEX_RESERVED_SYMBOLS_RE.sub(replace, input)
+        return cls.TEX_RESERVED_SYMBOLS_RE.sub(replace, string)

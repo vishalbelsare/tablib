@@ -97,12 +97,21 @@ install Tablib with ``pip install "tablib[pandas]"`` to make the format availabl
 html
 ====
 
-The ``html`` format is currently export-only. The exports produce an HTML page
-with the data in a ``<table>``. If headers have been set, they will be used as
-table headers.
+The exports produce an HTML page with the data in a ``<table>``. If headers have
+been set, they will be used as table headers (``thead``).
 
-This format is optional, install Tablib with ``pip install "tablib[html]"`` to
-make the format available.
+When you import HTML, you can specify a specific table to import by providing
+the ``table_id`` argument::
+
+    import tablib
+
+    tablib.import_set(your_html, format='html', table_id='some_table_id')
+
+Otherwise, the first table found will be imported.
+
+.. versionchanged:: 3.6.0
+
+    The ability to import HTML was added. The dependency on MarkupPy was dropped.
 
 jira
 ====
@@ -136,11 +145,18 @@ If a title has been set, it will be exported as the table caption.
 ods
 ===
 
-Export data in OpenDocument Spreadsheet format. The ``ods`` format is currently
-export-only.
+Import/export data in OpenDocument Spreadsheet format.
+
+.. versionadded:: 3.6.0
+
+    Import functionality was added.
 
 This format is optional, install Tablib with ``pip install "tablib[ods]"`` to
 make the format available.
+
+The ``import_set()`` method also supports a ``skip_lines`` parameter that you
+can set to a number of lines that should be skipped before starting to read
+data.
 
 .. admonition:: Binary Warning
 
@@ -234,6 +250,18 @@ The ``import_set()`` method also supports a ``skip_lines`` parameter that you
 can set to a number of lines that should be skipped before starting to read
 data.
 
+The ``export_set()`` method supports a ``column_width`` parameter. Depending
+on the value passed, the column width will be set accordingly. It can be
+either ``None``, an integer, or default "adaptive". If "adaptive" is passed,
+the column width will be unique and will be calculated based on values' length.
+For example::
+
+    data = tablib.Dataset()
+    data.export('xlsx', column_width='adaptive')
+
+.. versionchanged:: 3.8.0
+    The ``column_width`` parameter for ``export_set()`` was added.
+
 .. versionchanged:: 3.1.0
 
     The ``skip_lines`` parameter for ``import_set()`` was added.
@@ -246,6 +274,10 @@ data.
 .. versionchanged:: 2.0.0
 
     Reads cell values instead of formulas.
+
+You can export data to xlsx format by calling :meth:`export('xlsx') <.export>`.
+There are optional parameters to control the export.
+For available parameters, see :meth:`tablib.formats._xlsx.XLSXFormat.export_set`.
 
 .. admonition:: Binary Warning
 

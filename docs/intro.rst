@@ -52,12 +52,4 @@ THE SOFTWARE.
 
 .. _`The MIT License`: https://opensource.org/licenses/mit-license.php
 
-.. _pythonsupport:
-
-Pythons Supported
------------------
-
-Python 3.6+ is officially supported.
-
 Now, go :ref:`install Tablib <install>`.
-

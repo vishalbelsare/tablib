@@ -1,5 +1,88 @@
 # History
 
+## 3.8.0 (2025-01-22)
+
+### Improvements
+
+- Add support for exporting XLSX with column width (#516)
+- Remove redundant check from `Dataset.load()` (#604)
+
+## 3.7.0 (2024-10-08)
+
+### Improvements
+
+- Add support for Python 3.13 (#592)
+- Drop support for EOL Python 3.8 (#598)
+- Add styling to datetime, date and time values for ODS (#594)
+- Add styling for date/time types for XLS (#596)
+
+### Bugfixes
+
+- Fix time and datetime export in ODS format (#595)
+- Avoid normalizing input twice in `import_set`/`book` (#591)
+
+## 3.6.1 (2024-04-04)
+
+### Bugfixes
+
+- Fix broken installs with pip failing to resolve the request for `tablib[html]` in some cases (#588).
+
+## 3.6.0 (2024-03-23)
+
+### Improvements
+
+- It's now possible to access a dataset row using its index without slicing (#24).
+- The dataset `transpose()` method can be called on datasets without headers.
+- The html format now supports importing from HTML content (#243)
+- The ODS format now supports importing from .ods files (#567). The support is
+  still a bit experimental.
+- When adding rows to a dataset with dynamic columns, it's now possible to
+  provide only static values, and dynamic column values will be automatically
+  calculated and added to the row (#572).
+
+### Changes
+
+- The html export format does not depend on MarkupPy any longer, therefore the
+  tablib[html] install target was removed also.
+
+### Bugfixes
+
+- Fix crash when loading a databook from an XLS file (#522).
+- `None` Python values are now converted to the empty string by the ODS formatter.
+- When applying formatters, the internal data is no longer mutated (#578).
+- Columns can be inserted even when a dataset has headers but no values (#583).
+
+## 3.5.0 (2023-06-11)
+
+### Improvements
+
+- Add support for Python 3.12 (#550)
+- Drop support for EOL Python 3.7 (#551)
+- Allow importing 'ragged' .xlsx files through dataset (#547)
+- Release: replace deprecated `repository_url` with `repository-url` (#545)
+
+## 3.4.0 (2023-03-24)
+
+### Improvements
+
+- Move setup to `pyproject.toml` (#542)
+- xlsx export: remove redundant code (#541)
+- xlsx export: support escape of formulae (#540)
+- Add &lt;tbody&gt; tags to HTML output (#539)
+- Check for type list and improve error msg (#524)
+
+### Bugfixes
+
+- Fix bug when yaml file is empty (#535)
+- Fix linting issues raised by Flake8 (#536)
+
+## 3.3.0 (2022-12-10)
+
+### Improvements
+
+- Add support for Python 3.11 (#525).
+- ODS export: integers/floats/decimals are exported as numbers (#527).
+
 ## 3.2.1 (2022-04-09)
 
 ### Bugfixes
